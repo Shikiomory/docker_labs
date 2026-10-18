@@ -33,7 +33,7 @@
    ```
 
 5. **Корректная обработка сигнала SIGTERM**  
-   Команда запуска оформлена в exec-формате (JSON-массив), благодаря чему процесс Python становится процессом PID 1 в обход командной оболочки `/bin/sh`. Сервер моментально перехватывает сигнал остановки `docker stop`, завершая работу за доли секунды без 10-секундного зависания и принудительного `SIGKILL`.
+   Команда запуска оформлена в exec-формате (JSON-массив), благодаря чему процесс Python становится процессом PID 1 в обход командной оболочки `/bin/sh`. Сервер моментально перехватывает сигнал остановки `docker stop`, завершая работу за доли секунды без 10-секундного зависания и принудительного `SIGKILL` благодаря обработчику `signal.signal(signal.SIGTERM, handle_sigterm)` в файле app.py, который При получении сигнала функция `handle_sigterm` принудительно сбрасывает буфер вывода (`Shutting down...`) и штатно завершает приложение через `sys.exit(0)`.
    ```dockerfile
    CMD ["python", "-m", "app.app"]
    ```
@@ -55,6 +55,8 @@
    ENV ROCKET_SIZE=default
    ```
    
+--- 
+
 ## 2. История слоев образа (`docker history`)
 
 Вывод команды `docker history shikomory/image-lab:d22f8c27`:
@@ -83,4 +85,72 @@ IMAGE          CREATED             CREATED BY                                   
 <missing>      11 days ago         ENV PATH=/usr/local/bin:/usr/local/sbin:/usr…   0B        buildkit.dockerfile.v0
 <missing>      12 days ago         # debian.sh --arch 'amd64' out/ 'trixie' '@1…   78.8MB    debuerreotype 0.17
 ```
+
+--- 
+
+## 3. Логи терминала при тестировании
+
+### Считывание конфигурации и запуск
+```bash
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ SEED_JSON=seed-shikomory.json
+
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ LOGIN=$(jq -r .login  "$SEED_JSON")
+$ TOKEN=$(jq -r .token  "$SEED_JSON")
+$ PREFIX=$(jq -r .prefix "$SEED_JSON")
+
+# Запуск в фоновом режиме с флагом --read-only
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ docker run -d --rm --read-only \
+  -e ROCKET_SIZE=Big \
+  -p 8080:8000 "$LOGIN/image-lab:$PREFIX"
+80e3417ec788806242dc8b0e6d18f5cfe601468a123bf45e4eb66f180b469b12
+```
+
+### Проверка доступности эндпоинтов
+```bash
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ curl -s http://localhost:8080/health
+{"status":"ok","uptime":9.51}
+
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ curl -s http://localhost:8080/
+Hello from Docker! Rocket=Big
+```
+
+### Подтверждение работы в `--read-only`
+Попытка создать файл внутри защищенного контейнера вызывает ошибку уровня файловой системы ядра Linux:
+```bash
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ docker exec 80e3417 touch //app/file.txt
+touch: cannot touch '//app/file.txt': Read-only file system
+```
+
+### Остановка контейнера и проверка перехвата SIGTERM
+Демонстрация вызова `docker stop` и фактического срабатывания обработчика `handle_sigterm` из кода приложения:
+```bash
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ docker run -d --read-only -e ROCKET_SIZE=Big -p 8080:8000 "$LOGIN/image-lab:$PREFIX"
+efee5aa517bc2bb75d26c6ec34a71708c3b22c3933913b106f67ed2531cf6f4a
+
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ docker stop efee5aa
+efee5aa
+
+Shiko@DESKTOP-H6DISB9 MINGW64 /f/projects/python/FlaskDocker (master)
+$ docker logs efee5aa
+ * Serving Flask app 'app'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8000
+ * Running on http://172.17.0.2:8000
+Press CTRL+C to quit
+127.0.0.1 - - [18/Oct/2026 12:58:11] "GET /health HTTP/1.1" 200 -
+Shutting down...
+```
+Строка `Shutting down...` в конце лога подтверждает штатный вход в обработчик сигнала и вызов `sys.exit(0)`.
+
+---
 
