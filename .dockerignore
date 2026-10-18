@@ -1,3 +1,4 @@
+seed-*.json
 __pycache__/
 *.pyc
 *.log
@@ -6,4 +7,3 @@ __pycache__/
 .vscode
 .idea
 .DS_Store
-seed-*.json
